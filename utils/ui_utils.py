@@ -151,25 +151,18 @@ def train_lora_interface(original_image,
                          lora_batch_size,
                          lora_rank,
                          progress=gr.Progress()):
-    try:
-        print(f"--- Bắt đầu Train LoRA với prompt: {prompt} ---")
-        train_lora(
-            original_image,
-            prompt,
-            model_path,
-            vae_path,
-            lora_path,
-            lora_step,
-            lora_lr,
-            lora_batch_size,
-            lora_rank,
-            progress)
-        print("--- Train LoRA hoàn tất thành công! ---")
-        return "Training LoRA Done!"
-    except Exception as e:
-        print("❌ LỖI KHI TRAIN LORA:")
-        traceback.print_exc() # Dòng này sẽ in toàn bộ chi tiết lỗi ra Kaggle
-        return f"Error: {str(e)}"
+    train_lora(
+        original_image,
+        prompt,
+        model_path,
+        vae_path,
+        lora_path,
+        lora_step,
+        lora_lr,
+        lora_batch_size,
+        lora_rank,
+        progress)
+    return "Training LoRA Done!"
 
 def preprocess_image(image,
                      device,
