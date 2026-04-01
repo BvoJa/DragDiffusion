@@ -246,7 +246,7 @@ def run_drag(source_image,
     # here, the point is in x,y coordinate
     for idx, point in enumerate(points):
         cur_point = torch.tensor([point[1]/full_h*args.sup_res_h, point[0]/full_w*args.sup_res_w])
-        cur_point = torch.round(cur_point)
+        cur_point = torch.round(cur_point.float())
         if idx % 2 == 0:
             handle_points.append(cur_point)
         else:
