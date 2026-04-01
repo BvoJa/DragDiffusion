@@ -90,7 +90,7 @@ def store_img(img, length=512):
     else:
         masked_img = image.copy()
     # when new image is uploaded, `selected_points` should be empty
-    return image, [], gr.Image.update(value=masked_img, interactive=True), mask
+    return image, gr.Image.update(value=masked_img, interactive=True), mask
 
 # once user upload an image, the original image is stored in `original_image`
 # the same image is displayed in `input_image` for point clicking purpose
@@ -127,7 +127,7 @@ def get_points(img,
         if len(points) == 2:
             cv2.arrowedLine(img, points[0], points[1], (255, 255, 255), 4, tipLength=0.5)
             points = []
-    return img if isinstance(img, np.ndarray) else np.array(img)
+    return img, sel_pix
 
 # clear all handle/target points
 def undo_points(original_image,
