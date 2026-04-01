@@ -224,12 +224,12 @@ with gr.Blocks() as demo:
     canvas.edit(
         store_img,
         [canvas],
-        [original_image, selected_points, input_image, mask]
+        [original_image, input_image, mask] # Chỉ có 3 output, không có selected_points
     )
     input_image.select(
         get_points,
         [input_image, selected_points],
-        [input_image],
+        [input_image, selected_points], # Phải trả về cả 2 vào đây
     )
     undo_button.click(
         undo_points,
@@ -251,21 +251,9 @@ with gr.Blocks() as demo:
     )
     run_button.click(
         run_drag,
-        [original_image,
-        input_image,
-        mask,
-        prompt,
-        selected_points,
-        inversion_strength,
-        lam,
-        latent_lr,
-        n_pix_step,
-        model_path,
-        vae_path,
-        lora_path,
-        start_step,
-        start_layer,
-        ],
+        [original_image, input_image, mask, prompt, selected_points, 
+         inversion_strength, lam, latent_lr, n_pix_step, model_path, vae_path, 
+         lora_path, start_step, start_layer],
         [output_image]
     )
     clear_all_button.click(
