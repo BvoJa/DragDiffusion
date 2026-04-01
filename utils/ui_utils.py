@@ -188,167 +188,174 @@ def run_drag(source_image,
              start_layer,
              save_dir="./results"
     ):
-    # initialize model
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012,
-                          beta_schedule="scaled_linear", clip_sample=False,
-                          set_alpha_to_one=False, steps_offset=1)
-    model = DragPipeline.from_pretrained(model_path, scheduler=scheduler, torch_dtype=torch.float16)
-    # call this function to override unet forward function,
-    # so that intermediate features are returned after forward
-    model.modify_unet_forward()
+    try:
+        import traceback
+        import datetime
+        print("\n--- 🏁 BẮT ĐẦU GIAI ĐOẠN INFERENCE (DRAG) ---")
+        
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012,
+                            beta_schedule="scaled_linear", clip_sample=False,
+                            set_alpha_to_one=False, steps_offset=1)
+        
+        print(f"⏬ Đang nạp model từ: {model_path}...")
+        model = DragPipeline.from_pretrained(model_path, scheduler=scheduler, torch_dtype=torch.float16)
+        model.modify_unet_forward()
 
-    # set vae
-    if vae_path != "default":
-        model.vae = AutoencoderKL.from_pretrained(
-            vae_path
-        ).to(model.vae.device, model.vae.dtype)
+        if vae_path != "default":
+            print(f"⏬ Đang nạp VAE tùy chỉnh: {vae_path}")
+            model.vae = AutoencoderKL.from_pretrained(vae_path).to(model.vae.device, model.vae.dtype)
 
-    # off load model to cpu, which save some memory.
-    model.enable_model_cpu_offload()
+        model.enable_model_cpu_offload()
+        seed_everything(42)
 
-    # initialize parameters
-    seed = 42 # random seed used by a lot of people for unknown reason
-    seed_everything(seed)
+        args = SimpleNamespace()
+        args.prompt = prompt
+        args.points = points
+        args.n_inference_step = 50
+        args.n_actual_inference_step = round(inversion_strength * args.n_inference_step)
+        args.guidance_scale = 1.0
+        args.unet_feature_idx = [3]
+        args.r_m = 1
+        args.r_p = 3
+        args.lam = lam
+        args.lr = latent_lr
+        args.n_pix_step = n_pix_step
 
-    args = SimpleNamespace()
-    args.prompt = prompt
-    args.points = points
-    args.n_inference_step = 50
-    args.n_actual_inference_step = round(inversion_strength * args.n_inference_step)
-    args.guidance_scale = 1.0
+        full_h, full_w = source_image.shape[:2]
+        args.sup_res_h = int(0.5*full_h)
+        args.sup_res_w = int(0.5*full_w)
 
-    args.unet_feature_idx = [3]
+        print(f"📝 Config: {args}")
 
-    args.r_m = 1
-    args.r_p = 3
-    args.lam = lam
+        source_image_tensor = preprocess_image(source_image, device, dtype=torch.float16)
+        image_with_clicks_tensor = preprocess_image(image_with_clicks, device)
 
-    args.lr = latent_lr
-    args.n_pix_step = n_pix_step
+        # Xử lý mask
+        mask_tensor = torch.from_numpy(mask).float() / 255.
+        mask_tensor[mask_tensor > 0.0] = 1.0
+        mask_tensor = rearrange(mask_tensor, "h w -> 1 1 h w").to(device)
+        mask_tensor = F.interpolate(mask_tensor, (args.sup_res_h, args.sup_res_w), mode="nearest")
 
-    full_h, full_w = source_image.shape[:2]
-    args.sup_res_h = int(0.5*full_h)
-    args.sup_res_w = int(0.5*full_w)
+        # Xử lý tọa độ
+        handle_points = []
+        target_points = []
+        if len(points) == 0:
+            print("⚠️ CẢNH BÁO: Không có tọa độ Handle/Target nào được chọn!")
+        
+        for idx, point in enumerate(points):
+            cur_point = torch.tensor([point[1]/full_h*args.sup_res_h, point[0]/full_w*args.sup_res_w])
+            cur_point = torch.round(cur_point.float())
+            if idx % 2 == 0:
+                handle_points.append(cur_point)
+            else:
+                target_points.append(cur_point)
+        
+        print(f"📍 Handle points: {handle_points}")
+        print(f"📍 Target points: {target_points}")
 
-    print(args)
-
-    source_image = preprocess_image(source_image, device, dtype=torch.float16)
-    image_with_clicks = preprocess_image(image_with_clicks, device)
-
-    # preparing editing meta data (handle, target, mask)
-    mask = torch.from_numpy(mask).float() / 255.
-    mask[mask > 0.0] = 1.0
-    mask = rearrange(mask, "h w -> 1 1 h w").cuda()
-    mask = F.interpolate(mask, (args.sup_res_h, args.sup_res_w), mode="nearest")
-
-    handle_points = []
-    target_points = []
-    # here, the point is in x,y coordinate
-    for idx, point in enumerate(points):
-        cur_point = torch.tensor([point[1]/full_h*args.sup_res_h, point[0]/full_w*args.sup_res_w])
-        cur_point = torch.round(cur_point.float())
-        if idx % 2 == 0:
-            handle_points.append(cur_point)
+        # Set LoRA
+        if lora_path == "":
+            print("ℹ️ Sử dụng tham số mặc định (No LoRA)")
+            model.unet.set_default_attn_processor()
         else:
-            target_points.append(cur_point)
-    print('handle points:', handle_points)
-    print('target points:', target_points)
+            print(f"💉 Đang áp dụng LoRA từ: {lora_path}")
+            model.unet.load_attn_procs(lora_path)
 
-    # set lora
-    if lora_path == "":
-        print("applying default parameters")
-        model.unet.set_default_attn_processor()
-    else:
-        print("applying lora: " + lora_path)
-        model.unet.load_attn_procs(lora_path)
+        print("🔤 Đang lấy Text Embeddings...")
+        text_embeddings = model.get_text_embeddings(prompt)
 
-    # obtain text embeddings
-    text_embeddings = model.get_text_embeddings(prompt)
+        print("🌀 Bước 1: Đang thực hiện DDIM Inversion...")
+        invert_code = model.invert(source_image_tensor,
+                                   prompt,
+                                   encoder_hidden_states=text_embeddings,
+                                   guidance_scale=args.guidance_scale,
+                                   num_inference_steps=args.n_inference_step,
+                                   num_actual_inference_steps=args.n_actual_inference_step)
 
-    # invert the source image
-    # the latent code resolution is too small, only 64*64
-    invert_code = model.invert(source_image,
-                               prompt,
-                               encoder_hidden_states=text_embeddings,
-                               guidance_scale=args.guidance_scale,
-                               num_inference_steps=args.n_inference_step,
-                               num_actual_inference_steps=args.n_actual_inference_step)
+        torch.cuda.empty_cache()
 
-    # empty cache to save memory
-    torch.cuda.empty_cache()
+        init_code = invert_code
+        init_code_orig = deepcopy(init_code)
+        model.scheduler.set_timesteps(args.n_inference_step)
+        t = model.scheduler.timesteps[args.n_inference_step - args.n_actual_inference_step]
 
-    init_code = invert_code
-    init_code_orig = deepcopy(init_code)
-    model.scheduler.set_timesteps(args.n_inference_step)
-    t = model.scheduler.timesteps[args.n_inference_step - args.n_actual_inference_step]
+        # Optimization
+        init_code = init_code.float()
+        text_embeddings = text_embeddings.float()
+        model.unet = model.unet.float()
 
-    # feature shape: [1280,16,16], [1280,32,32], [640,64,64], [320,64,64]
-    # convert dtype to float for optimization
-    init_code = init_code.float()
-    text_embeddings = text_embeddings.float()
-    model.unet = model.unet.float()
+        print("🔮 Bước 2: Đang thực hiện Drag Update (Optimization)...")
+        updated_init_code = drag_diffusion_update(
+            model,
+            init_code,
+            text_embeddings,
+            t,
+            handle_points,
+            target_points,
+            mask_tensor,
+            args)
 
-    updated_init_code = drag_diffusion_update(
-        model,
-        init_code,
-        text_embeddings,
-        t,
-        handle_points,
-        target_points,
-        mask,
-        args)
+        updated_init_code = updated_init_code.half()
+        text_embeddings = text_embeddings.half()
+        model.unet = model.unet.half()
+        torch.cuda.empty_cache()
 
-    updated_init_code = updated_init_code.half()
-    text_embeddings = text_embeddings.half()
-    model.unet = model.unet.half()
+        # Attention Control
+        editor = MutualSelfAttentionControl(start_step=start_step,
+                                            start_layer=start_layer,
+                                            total_steps=args.n_inference_step,
+                                            guidance_scale=args.guidance_scale)
+        if lora_path == "":
+            register_attention_editor_diffusers(model, editor, attn_processor='attn_proc')
+        else:
+            register_attention_editor_diffusers(model, editor, attn_processor='lora_attn_proc')
 
-    # empty cache to save memory
-    torch.cuda.empty_cache()
+        print("🖼️ Bước 3: Đang thực hiện Final Sampling (Denoising)...")
+        gen_image = model(
+            prompt=args.prompt,
+            encoder_hidden_states=torch.cat([text_embeddings]*2, dim=0),
+            batch_size=2,
+            latents=torch.cat([init_code_orig, updated_init_code], dim=0),
+            guidance_scale=args.guidance_scale,
+            num_inference_steps=args.n_inference_step,
+            num_actual_inference_steps=args.n_actual_inference_step
+            )[1].unsqueeze(dim=0)
 
-    # hijack the attention module
-    # inject the reference branch to guide the generation
-    editor = MutualSelfAttentionControl(start_step=start_step,
-                                        start_layer=start_layer,
-                                        total_steps=args.n_inference_step,
-                                        guidance_scale=args.guidance_scale)
-    if lora_path == "":
-        register_attention_editor_diffusers(model, editor, attn_processor='attn_proc')
-    else:
-        register_attention_editor_diffusers(model, editor, attn_processor='lora_attn_proc')
+        gen_image = F.interpolate(gen_image, (full_h, full_w), mode='bilinear')
 
-    # inference the synthesized image
-    gen_image = model(
-        prompt=args.prompt,
-        encoder_hidden_states=torch.cat([text_embeddings]*2, dim=0),
-        batch_size=2,
-        latents=torch.cat([init_code_orig, updated_init_code], dim=0),
-        guidance_scale=args.guidance_scale,
-        num_inference_steps=args.n_inference_step,
-        num_actual_inference_steps=args.n_actual_inference_step
-        )[1].unsqueeze(dim=0)
+        print("💾 Đang ghép ảnh và lưu kết quả...")
+        # Fix lỗi dtype/device khi cat
+        white_bar = torch.ones((1, 3, full_h, 25)).to(device, dtype=torch.float32)
+        
+        save_result = torch.cat([
+            source_image_tensor.float() * 0.5 + 0.5,
+            white_bar,
+            image_with_clicks_tensor.float() * 0.5 + 0.5,
+            white_bar,
+            gen_image[0:1].float()
+        ], dim=-1)
 
-    # resize gen_image into the size of source_image
-    # we do this because shape of gen_image will be rounded to multipliers of 8
-    gen_image = F.interpolate(gen_image, (full_h, full_w), mode='bilinear')
+        if not os.path.isdir(save_dir):
+            os.makedirs(save_dir)
+        
+        save_prefix = datetime.datetime.now().strftime("%Y-%m-%d-%H%M-%S")
+        save_path = os.path.join(save_dir, save_prefix + '.png')
+        save_image(save_result, save_path)
+        
+        print(f"✅ Đã lưu kết quả tại: {save_path}")
 
-    # save the original image, user editing instructions, synthesized image
-    save_result = torch.cat([
-        source_image.float() * 0.5 + 0.5,
-        torch.ones((1,3,full_h,25)).cuda(),
-        image_with_clicks.float() * 0.5 + 0.5,
-        torch.ones((1,3,full_h,25)).cuda(),
-        gen_image[0:1].float()
-    ], dim=-1)
+        out_image = gen_image.cpu().permute(0, 2, 3, 1).numpy()[0]
+        out_image = (out_image * 255).astype(np.uint8)
+        
+        print("--- ✨ HOÀN TẤT INFERENCE THÀNH CÔNG! ---")
+        return out_image
 
-    if not os.path.isdir(save_dir):
-        os.mkdir(save_dir)
-    save_prefix = datetime.datetime.now().strftime("%Y-%m-%d-%H%M-%S")
-    save_image(save_result, os.path.join(save_dir, save_prefix + '.png'))
-
-    out_image = gen_image.cpu().permute(0, 2, 3, 1).numpy()[0]
-    out_image = (out_image * 255).astype(np.uint8)
-    return out_image
+    except Exception as e:
+        print("\n❌ LỖI TRONG QUÁ TRÌNH RUN_DRAG:")
+        traceback.print_exc()
+        # Trả về source_image để tránh sập UI
+        return source_image
 
 # -------------------------------------------------------
 
